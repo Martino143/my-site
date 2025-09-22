@@ -1,12 +1,29 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8">
-    <title>My Site</title>
-    <link rel="stylesheet" href="style.css">
-  </head>
-  <body>
-    <h1>NickMartino.me</h1>
-    <p>website</p>
-  </body>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hedgehog Breaker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="720" height="480" aria-label="Block breaker game"></canvas>
+
+    <div id="ui">
+      <h1>Hedgehog Breaker</h1>
+      <p>Move: <strong>← →</strong> or <strong>A D</strong> or <strong>Mouse</strong><br/>
+         Pause: <strong>P</strong> &nbsp; • &nbsp; Restart: <strong>R</strong></p>
+      <button id="start">Play</button>
+    </div>
+
+    <div id="hud">
+      <span id="score">Score: 0</span>
+      <span id="lives">Lives: 3</span>
+      <span id="level">Level: 1</span>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
 </html>
