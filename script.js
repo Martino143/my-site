@@ -220,7 +220,12 @@ function reset(levelUp=false){
   paddle.sticky=false; paddle.laser=false; paddle.magnet=false; paddle.shield=0;
   layout();
 }
-function updateHUD(){ scoreEl.textContent=`Score: ${score}  x${combo.toFixed(1)}`; livesEl.textContent=`Lives: ${lives}`; levelEl.textContent=`Level: ${level} • ${MODE.toUpperCase()}`; }
+function updateHUD(){
+  scoreEl.textContent = `Score: ${score}  x${combo.toFixed(1)}`;
+  livesEl.textContent = `Lives: ${lives}`;
+  levelEl.textContent = `Level: ${level} • ${MODE_NAME[MODE]}`;
+}
+
 
 // -------- Input --------
 const keys=new Set();
