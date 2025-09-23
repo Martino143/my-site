@@ -32,7 +32,7 @@ const MODE_CONFIG = {
     maxBallSpeed: 9.0,
     bombs: 0.05,
     moving: 0.10,
-    regen: 0.05,
+    regen: 0,
     vortex: false
   },
   medium: {
@@ -48,7 +48,7 @@ const MODE_CONFIG = {
     maxBallSpeed: 12.0,
     bombs: 0.12,
     moving: 0.18,
-    regen: 0.10,
+    regen: 0,
     vortex: false
   },
   hard: {
@@ -64,7 +64,7 @@ const MODE_CONFIG = {
     maxBallSpeed: 13.5,
     bombs: 0.18,
     moving: 0.22,
-    regen: 0.14,
+    regen: 0,
     vortex: true                   // NEW hard-only hazard
   }
    
