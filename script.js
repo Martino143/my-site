@@ -67,7 +67,14 @@ const MODE_CONFIG = {
     regen: 0.14,
     vortex: true                   // NEW hard-only hazard
   }
+   
 };
+const MODE_NAME = {
+  easy: "Mini (Easy)",
+  medium: "Stormy (Medium)",
+  hard: "Anita (Hard)"
+};
+
 
 let MODE = "easy";
 function readSelectedMode(){
