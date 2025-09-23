@@ -1,4 +1,9 @@
-/* Hedgehog Breaker: Arcade Chaos (no portals, clamped paddle size) */
+/* Hedgehog Breaker — Modes + Anti-Stall + No-Portal + Paddle Min Clamp
+   - Modes: easy / medium / hard (with vortex hazard on hard)
+   - Anti-stall: guarantees a minimum vertical component + micro "english"
+   - Paddle width clamped between 12% and 60% of canvas width
+   - Mobile friendly speeds retained
+*/
 
 const HEDGEHOG_SRC = "hedgehog.png";
 const canvas = document.getElementById("game");
@@ -11,49 +16,104 @@ const levelEl = document.getElementById("level");
 
 const BASE_W = 720, BASE_H = 480;
 const MOBILE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-let SPEED_MULT  = MOBILE ? 1.9 : 1.05;
-let PADDLE_MULT = MOBILE ? 1.7 : 1.1;
 
-let running=false, paused=false, chaos=true;
+// -------- MODES --------
+const MODE_CONFIG = {
+  easy: {
+    speedMult: MOBILE ? 1.2 : 0.95,
+    paddleMult: MOBILE ? 1.5 : 1.0,
+    chaos: false,
+    eventBaseMs: 999999,           // effectively off
+    brickPool: ["normal","normal","normal","steel","normal","normal"],
+    rows: 5, cols: 10,
+    bossEvery: 6,
+    dropRate: 0.20,                // more generous
+    shooterChance: 0.00,
+    maxBallSpeed: 9.0,
+    bombs: 0.05,
+    moving: 0.10,
+    regen: 0.05,
+    vortex: false
+  },
+  medium: {
+    speedMult: MOBILE ? 1.9 : 1.1,
+    paddleMult: MOBILE ? 1.7 : 1.1,
+    chaos: true,
+    eventBaseMs: 16000,
+    brickPool: ["normal","steel","bomb","moving","regen","shooter","normal","normal"],
+    rows: 6, cols: 11,
+    bossEvery: 5,
+    dropRate: 0.16,
+    shooterChance: 0.10,
+    maxBallSpeed: 12.0,
+    bombs: 0.12,
+    moving: 0.18,
+    regen: 0.10,
+    vortex: false
+  },
+  hard: {
+    speedMult: MOBILE ? 2.2 : 1.25,
+    paddleMult: MOBILE ? 1.8 : 1.2,
+    chaos: true,
+    eventBaseMs: 12000,           // more frequent events
+    brickPool: ["normal","steel","bomb","moving","regen","shooter","normal","steel","bomb"],
+    rows: 7, cols: 12,
+    bossEvery: 4,
+    dropRate: 0.14,
+    shooterChance: 0.18,
+    maxBallSpeed: 13.5,
+    bombs: 0.18,
+    moving: 0.22,
+    regen: 0.14,
+    vortex: true                   // NEW hard-only hazard
+  }
+};
+
+let MODE = "easy";
+function readSelectedMode(){
+  const sel = document.querySelector('input[name="mode"]:checked');
+  MODE = sel ? sel.value : "easy";
+}
+
+// -------- State --------
+let running=false, paused=false;
 let score=0, lives=3, level=1, combo=1, comboTimer=0;
 let DPR=1, scaleX=1, scaleY=1, last=0, dt=16;
 
 const hog = new Image(); hog.src = HEDGEHOG_SRC; let hogReady=false; hog.onload=()=>hogReady=true;
 
-// --- tiny beeps
+// tiny beeps
 const ACtx = new (window.AudioContext||window.webkitAudioContext)();
 function beep(f=600, d=0.06, v=0.05, type="sine"){ const o=ACtx.createOscillator(), g=ACtx.createGain(); o.type=type; o.frequency.value=f; g.gain.value=v; o.connect(g); g.connect(ACtx.destination); o.start(); o.stop(ACtx.currentTime+d); }
 function boom(){ beep(120,0.2,0.06,"triangle"); }
 function vibe(ms=30){ if(navigator.vibrate) navigator.vibrate(ms); }
 
-// --- entities
+// entities
 const paddle = { w:0, h:0, x:0, y:0, vx:0, speed:10, sticky:false, laser:false, shield:0, magnet:false };
-const balls = [];
-const powerUps = [];
-const bullets  = [];
-const lasers   = [];
-const bursts   = [];
+const balls=[], powerUps=[], bullets=[], lasers=[], bursts=[];
 
+// bricks
 const BRICK = { rows:6, cols:11, pad:0, w:0, h:0, top:0, left:0 };
 let bricks=[];
 
-// effects
+// effects / events
 let wind=0, gravity=1, slowmo=1, dark=0, reverseCtlT=0, tinyT=0, rainT=0, eventTimer=0;
 let shakeT=0, shakeMag=0;
 
 // boss
 let boss=null;
 
-// ---------- helpers (paddle width clamp) ----------
+// hard-mode vortices (black-hole style pull)
+const vortices = []; // {x,y,r,ttl,strength}
+
+// -------- Helpers (paddle clamp) --------
 function canvasCSSWidth(){ return canvas.width / DPR; }
-function paddleMinWidth(){ return canvasCSSWidth() * 0.12; }  // 12% of canvas
-function paddleMaxWidth(){ return canvasCSSWidth() * 0.60; }  // 60% of canvas
-function setPaddleWidth(w){
-  paddle.w = Math.max(paddleMinWidth(), Math.min(paddleMaxWidth(), w));
-}
+function paddleMinWidth(){ return canvasCSSWidth() * 0.12; }
+function paddleMaxWidth(){ return canvasCSSWidth() * 0.60; }
+function setPaddleWidth(w){ paddle.w = Math.max(paddleMinWidth(), Math.min(paddleMaxWidth(), w)); }
 function clampPaddleWidth(){ setPaddleWidth(paddle.w); }
 
-// ---------- layout & scaling ----------
+// -------- Layout --------
 function setCanvasForDPR(){
   const r = canvas.getBoundingClientRect();
   DPR = window.devicePixelRatio || 1;
@@ -66,13 +126,18 @@ function setCanvasForDPR(){
 function layout(){
   setCanvasForDPR();
 
+  const C = MODE_CONFIG[MODE];
+
+  BRICK.rows = C.rows;
+  BRICK.cols = C.cols;
+
   // paddle
   setPaddleWidth(0.18 * BASE_W * scaleX);
   paddle.h = 0.035 * BASE_H * scaleY;
   paddle.x = (BASE_W*scaleX)/2 - paddle.w/2;
   paddle.y = (BASE_H*scaleY) - paddle.h - 16;
 
-  // bricks grid
+  // brick grid
   BRICK.pad = 6 * scaleX;
   BRICK.left= 24 * scaleX;
   BRICK.top = 56 * scaleY;
@@ -80,8 +145,9 @@ function layout(){
   BRICK.w = ((BASE_W*scaleX) - BRICK.left*2 - padW) / BRICK.cols;
   BRICK.h = 18 * scaleY;
 
-  balls.length=0; lasers.length=0; powerUps.length=0; bullets.length=0; bursts.length=0;
+  balls.length=0; lasers.length=0; powerUps.length=0; bullets.length=0; bursts.length=0; vortices.length=0;
   boss=null;
+
   makeLevel();
   spawnBall(true);
   draw();
@@ -89,8 +155,9 @@ function layout(){
 
 function makeLevel(){
   bricks=[];
-  if(level % 5 === 0){
-    // mini-boss level (no portal bricks used anywhere)
+  const C = MODE_CONFIG[MODE];
+  // boss level?
+  if(level % C.bossEvery === 0){
     for(let r=0;r<4;r++){
       for(const c of [0, BRICK.cols-1]){
         addBrick(c, r+1, "steel", 4);
@@ -100,19 +167,25 @@ function makeLevel(){
       x: (BASE_W*scaleX)/2 - 80*scaleX,
       y: BRICK.top + 20*scaleY,
       w: 160*scaleX, h: 28*scaleY,
-      hp: 40 + 10*(level/5-1), max: 40 + 10*(level/5-1),
+      hp: 40 + 10*(Math.floor(level/C.bossEvery)-1),
+      max: 40 + 10*(Math.floor(level/C.bossEvery)-1),
       dir: 1, shootT: 1200
     };
     return;
   }
 
-  // Mix WITHOUT portals (no circular bricks)
-  const pool = ["normal","normal","normal","steel","bomb","moving","regen","shooter","normal"];
+  // mix based on probabilities
   for(let r=0;r<BRICK.rows;r++){
     for(let c=0;c<BRICK.cols;c++){
-      const t = pool[(Math.random()*pool.length)|0];
-      const hp = (t==="steel") ? 3 : 1;
-      addBrick(c,r,t,hp);
+      const rnd = Math.random();
+      let type="normal";
+      if(rnd < C.bombs) type="bomb";
+      else if(rnd < C.bombs + C.moving) type="moving";
+      else if(rnd < C.bombs + C.moving + C.regen) type="regen";
+      else if(Math.random() < C.shooterChance) type="shooter";
+      else if(Math.random() < 0.15) type="steel";
+      const hp = type==="steel" ? 3 : 1;
+      addBrick(c,r,type,hp);
     }
   }
 }
@@ -122,10 +195,11 @@ function addBrick(c,r,type="normal",hp=1){
   bricks.push({x,y,type,hp,alive:true,phi:Math.random()*Math.PI*2, shootT: 1500+Math.random()*1200});
 }
 
-// ---------- balls ----------
+// -------- Balls --------
 function spawnBall(keep=false, atX=paddle.x+paddle.w/2){
+  const C = MODE_CONFIG[MODE];
   const r = Math.max(10*Math.min(scaleX,scaleY), 8);
-  const base = (4.7 + (level-1)*0.42) * SPEED_MULT;
+  const base = (4.7 + (level-1)*0.42) * C.speedMult;
   const sp = keep && balls[0] ? Math.hypot(balls[0].vx, balls[0].vy) : base;
   const ang = (Math.random()*0.7 + 0.6) * Math.PI;
   balls.push({x:atX, y:paddle.y-r-2, vx:Math.cos(ang)*sp*scaleX, vy:-Math.abs(Math.sin(ang))*sp*scaleY, r, trail:[], stuck:false, phaseT:0});
@@ -139,9 +213,9 @@ function reset(levelUp=false){
   paddle.sticky=false; paddle.laser=false; paddle.magnet=false; paddle.shield=0;
   layout();
 }
-function updateHUD(){ scoreEl.textContent=`Score: ${score}  x${combo.toFixed(1)}`; livesEl.textContent=`Lives: ${lives}`; levelEl.textContent=`Level: ${level}${chaos?" • CHAOS":""}`; }
+function updateHUD(){ scoreEl.textContent=`Score: ${score}  x${combo.toFixed(1)}`; livesEl.textContent=`Lives: ${lives}`; levelEl.textContent=`Level: ${level} • ${MODE.toUpperCase()}`; }
 
-// ---------- input ----------
+// -------- Input --------
 const keys=new Set();
 document.addEventListener("keydown",e=>{
   if(e.key==="ArrowLeft"||e.key.toLowerCase()==="a") keys.add("left");
@@ -160,21 +234,18 @@ function onDrag(evt){
   const mx = pointerX(evt);
   paddle.x = Math.min(Math.max(mx - paddle.w/2, 0), canvas.width/DPR - paddle.w);
   if(evt.cancelable) evt.preventDefault();
+  // release sticky balls with a flick
   for(const b of balls) if(b.stuck){ b.stuck=false; b.vy = -Math.abs(Math.max(3.2, Math.hypot(b.vx,b.vy))*0.9); }
 }
 canvas.addEventListener("mousemove",onDrag);
 canvas.addEventListener("touchstart",onDrag,{passive:false});
 canvas.addEventListener("touchmove",onDrag,{passive:false});
 
-// ---------- power-ups ----------
-const PUPS = [
-  "BIG","STICKY","MULTI","BOOST","SLOW","HEART",
-  "LASER","SHIELD","MAGNET","PHASE",
-  "CONFUSE","TINY"
-];
+// -------- Power-ups --------
+const PUPS = ["BIG","STICKY","MULTI","BOOST","SLOW","HEART","LASER","SHIELD","MAGNET","PHASE","CONFUSE","TINY"];
 function dropPower(x,y,forceType=null){
-  const roll = Math.random();
-  if(forceType || roll < 0.16 || rainT>0){
+  const C = MODE_CONFIG[MODE];
+  if(forceType || Math.random() < C.dropRate || rainT>0){
     const type = forceType || PUPS[(Math.random()*PUPS.length)|0];
     powerUps.push({x,y, vx:(Math.random()*0.8-0.4), vy:1.8*scaleY, r:11, type});
   }
@@ -204,17 +275,19 @@ function fireLasers(){
   beep(780,0.05,0.06);
 }
 
-// ---------- enemies / bullets ----------
+// -------- Enemies / bullets --------
 function enemyShoot(x,y){ bullets.push({x,y, vy: 3.2*scaleY}); beep(300,0.05,0.04,"square"); }
 
-// ---------- events (kept, no portals involved) ----------
+// -------- Events / Vortex --------
 function scheduleEvent(dt){
+  const C = MODE_CONFIG[MODE];
   eventTimer -= dt;
   if(eventTimer>0) return;
-  eventTimer = 16000 + Math.random()*8000;
+  eventTimer = C.eventBaseMs + Math.random()*8000;
 
-  if(!chaos) return;
-  const pick = (Math.random()*6)|0;
+  if(!C.chaos) return;
+
+  const pick = (Math.random()*7)|0;
   switch(pick){
     case 0: wind = (Math.random()*2-1) * 0.06; setTimeout(()=>wind=0, 7000); break;
     case 1: gravity = 0.85; setTimeout(()=>gravity=1, 7000); break;
@@ -222,37 +295,79 @@ function scheduleEvent(dt){
     case 3: dark = 0.6; setTimeout(()=>dark=0, 7000); break;
     case 4: reverseCtlT = 5000; break;
     case 5: rainT = 2500; break;
+    case 6: if(C.vortex) spawnVortex(); break; // hard mode extra
   }
 }
 
-// ---------- particles ----------
+function spawnVortex(){
+  const W = canvas.width/DPR, H = canvas.height/DPR;
+  const r = 28 * Math.min(scaleX,scaleY);
+  vortices.push({
+    x: Math.random()*(W-120)+60,
+    y: Math.random()*(H*0.45)+80,
+    r, ttl: 5500, strength: 90
+  });
+  beep(220,0.12,0.06,"sawtooth");
+}
+
+function applyVortexForces(b, dtime){
+  for(const v of vortices){
+    v.ttl -= dtime; // fade timer
+    if(v.ttl<=0) continue;
+    const dx = v.x - b.x, dy = v.y - b.y;
+    const dist2 = dx*dx + dy*dy + 60;
+    // attraction
+    const ax = (v.strength * dx / dist2) * (dtime/16);
+    const ay = (v.strength * dy / dist2) * (dtime/16);
+    b.vx += ax; b.vy += ay;
+
+    const d = Math.sqrt(dist2);
+    if(d < v.r*0.85){ // slingshot
+      const s = Math.hypot(b.vx,b.vy);
+      const ang = Math.random()*Math.PI*2;
+      const boost = 1.25;
+      b.vx = Math.cos(ang)*s*boost;
+      b.vy = Math.sin(ang)*s*boost;
+      shake(200,4);
+      beep(900,0.08,0.07);
+    }
+  }
+}
+
+// -------- Particles --------
 function shake(ms=140, mag=3){ shakeT=ms; shakeMag=mag; vibe(20); }
 function spray(x,y,n=10){ for(let i=0;i<n;i++){ bursts.push({x,y, vx:(Math.random()*2-1)*2, vy:(Math.random()*2-1)*2, life:1}); } }
 
-// ---------- loop ----------
+// -------- Anti-Stall Helpers --------
+function ensureVerticalMotion(b){
+  // Minimum vertical component based on canvas scale
+  const VY_MIN = 2.2 * Math.min(scaleX, scaleY);
+  if (Math.abs(b.vy) < VY_MIN){
+    b.vy = (b.vy >= 0 ? 1 : -1) * VY_MIN;
+  }
+}
+function addEnglish(b){
+  // add micro randomness to avoid perfect horizontal rebounds
+  const jitter = (Math.random()*0.35 - 0.175) * Math.min(scaleX, scaleY);
+  b.vy += jitter;
+}
+
+// -------- Loop --------
 function update(ts){
   if(!running || paused) return;
   dt = Math.min(32, (ts - last) || 16) * slowmo;
   last = ts;
 
+  const C = MODE_CONFIG[MODE];
   const W = canvas.width/DPR, H = canvas.height/DPR;
 
   // paddle keys
   let left = keys.has("left"), right = keys.has("right");
   if(reverseCtlT>0){ const L=left; left=right; right=L; reverseCtlT-=dt; if(reverseCtlT<0) reverseCtlT=0; }
   paddle.vx = 0;
-  if(left)  paddle.vx = -paddle.speed * PADDLE_MULT * Math.max(scaleX,scaleY);
-  if(right) paddle.vx =  paddle.speed * PADDLE_MULT * Math.max(scaleX,scaleY);
+  if(left)  paddle.vx = -paddle.speed * C.paddleMult * Math.max(scaleX,scaleY);
+  if(right) paddle.vx =  paddle.speed * C.paddleMult * Math.max(scaleX,scaleY);
   paddle.x = Math.min(Math.max(paddle.x + paddle.vx, 0), W - paddle.w);
-
-  // magnet pulls power-ups
-  if(paddle.magnet){
-    for(const p of powerUps){
-      const dx = (paddle.x+paddle.w/2)-p.x, dy=(paddle.y)-p.y;
-      const d = Math.hypot(dx,dy)+1;
-      p.vx += (dx/d)*0.02; p.vy += (dy/d)*0.02;
-    }
-  }
 
   // lasers
   for(const L of [...lasers]){
@@ -276,28 +391,45 @@ function update(ts){
   for(const b of [...balls]){
     if(b.stuck){ b.x = Math.max(paddle.x+b.r, Math.min(paddle.x+paddle.w-b.r, b.x)); b.y = paddle.y - b.r - 1; continue; }
 
+    // hard mode: vortex gravitational pull
+    if(MODE_CONFIG[MODE].vortex) applyVortexForces(b, dt);
+
+    // motion
     b.x += (b.vx + wind) * (dt/16);
     b.y += (b.vy + gravity*0.0) * (dt/16);
 
-    if(b.x-b.r<0){ b.x=b.r; b.vx*=-1; beep(500,0.03); }
-    if(b.x+b.r>W){ b.x=W-b.r; b.vx*=-1; beep(500,0.03); }
-    if(b.y-b.r<0){ b.y=b.r; b.vy*=-1; beep(450,0.03); }
+    // walls
+    if(b.x-b.r<0){ b.x=b.r; b.vx*=-1; addEnglish(b); beep(500,0.03); }
+    if(b.x+b.r>W){ b.x=W-b.r; b.vx*=-1; addEnglish(b); beep(500,0.03); }
+    if(b.y-b.r<0){ b.y=b.r; b.vy*=-1; addEnglish(b); beep(450,0.03); }
     if(b.y-b.r>H){ balls.splice(balls.indexOf(b),1); continue; }
 
     // paddle bounce
     if(b.x>paddle.x && b.x<paddle.x+paddle.w && b.y+b.r>paddle.y && b.y-b.r<paddle.y+paddle.h){
       b.y = paddle.y - b.r;
       const hit = (b.x - (paddle.x + paddle.w/2)) / (paddle.w/2);
-      const sp = Math.min(12*SPEED_MULT, Math.hypot(b.vx,b.vy)*1.03 + 0.12);
+      const sp = Math.min(C.maxBallSpeed, Math.hypot(b.vx,b.vy)*1.03 + 0.12);
       const ang = (-Math.PI/3)*hit;
       b.vx = sp*Math.sin(ang);
       b.vy = -Math.abs(sp*Math.cos(ang));
+      addEnglish(b);
+      ensureVerticalMotion(b);
       if(paddle.sticky) b.stuck=true;
       spray(b.x, b.y, 8);
       beep(720,0.04,0.05);
     }
 
-    comboTimer -= dt; if(comboTimer<=0) { combo = Math.max(1, combo-0.1); comboTimer=0; }
+    // anti-stall continuous guard
+    ensureVerticalMotion(b);
+
+    // cap max speed by mode
+    const spd = Math.hypot(b.vx,b.vy);
+    if(spd > C.maxBallSpeed){
+      const k = C.maxBallSpeed / spd;
+      b.vx *= k; b.vy *= k;
+    }
+
+    comboTimer -= dt; if(comboTimer<=0){ combo = Math.max(1, combo-0.1); comboTimer=0; }
 
     b.trail.push({x:b.x,y:b.y,life:1});
     if(b.trail.length>14) b.trail.shift();
@@ -305,7 +437,7 @@ function update(ts){
 
   if(balls.length===0){ loseBall(true); }
 
-  // bricks update (moving/regenerating/shooters only)
+  // bricks update
   for(const br of bricks){
     if(!br.alive) continue;
     if(br.type==="moving"){ br.phi += dt*0.003; br.x += Math.sin(br.phi)*0.8; }
@@ -314,15 +446,15 @@ function update(ts){
   }
 
   // ball vs bricks
-  for(const ball of balls){
+  for(const b of balls){
     for(const br of bricks){
       if(!br.alive) continue;
-      if(ball.x+ball.r>br.x && ball.x-ball.r<br.x+BRICK.w &&
-         ball.y+ball.r>br.y && ball.y-ball.r<br.y+BRICK.h){
-
-        const ox=Math.min(ball.x+ball.r-br.x, (br.x+BRICK.w)-(ball.x-ball.r));
-        const oy=Math.min(ball.y+ball.r-br.y, (br.y+BRICK.h)-(ball.y-ball.r));
-        if(ox<oy) ball.vx*=-1; else ball.vy*=-1;
+      if(b.x+b.r>br.x && b.x-b.r<br.x+BRICK.w && b.y+b.r>br.y && b.y-b.r<br.y+BRICK.h){
+        const ox=Math.min(b.x+b.r-br.x, (br.x+BRICK.w)-(b.x-b.r));
+        const oy=Math.min(b.y+b.r-br.y, (br.y+BRICK.h)-(b.y-b.r));
+        if(ox<oy) b.vx*=-1; else b.vy*=-1;
+        addEnglish(b);
+        ensureVerticalMotion(b);
 
         br.hp--;
         if(br.hp<=0){
@@ -331,7 +463,7 @@ function update(ts){
           combo = Math.min(5, combo+0.25);
           comboTimer = 2500;
           dropPower(br.x+BRICK.w/2, br.y+BRICK.h/2);
-          spray(ball.x, ball.y, 12);
+          spray(b.x, b.y, 12);
           shake(120,3);
           boom();
           if(br.type==="bomb"){
@@ -376,18 +508,27 @@ function update(ts){
   // boss
   if(boss){
     boss.x += (level%2?1:-1) * boss.dir * 1.6 * (dt/16);
-    if(boss.x<30 || boss.x+boss.w>W-30) boss.dir*=-1;
+    const Wm = canvas.width/DPR;
+    if(boss.x<30 || boss.x+boss.w>Wm-30) boss.dir*=-1;
     boss.shootT -= dt;
     if(boss.shootT<=0){ enemyShoot(boss.x + boss.w/2, boss.y+boss.h); boss.shootT = 900 + Math.random()*700; }
   }
 
-  // collect power-ups
+  // power-ups falling
   for(const p of [...powerUps]){
+    if(paddle.magnet){
+      const dx = (paddle.x+paddle.w/2)-p.x, dy=(paddle.y)-p.y;
+      const d = Math.hypot(dx,dy)+1;
+      p.vx += (dx/d)*0.02; p.vy += (dy/d)*0.02;
+    }
     p.x += p.vx*(dt/16); p.y += p.vy*(dt/16);
     if(p.x>paddle.x && p.x<paddle.x+paddle.w && p.y>paddle.y && p.y<paddle.y+paddle.h){
       applyPower(p.type); powerUps.splice(powerUps.indexOf(p),1);
     } else if(p.y > H+30) powerUps.splice(powerUps.indexOf(p),1);
   }
+
+  // vortices ttl cleanup
+  for(let i=vortices.length-1;i>=0;i--){ if(vortices[i].ttl<=0) vortices.splice(i,1); }
 
   // next level
   if(!boss && bricks.every(b=>!b.alive)){ reset(true); }
@@ -408,7 +549,7 @@ function loseBall(fromBottom=false){
   balls.length=0; spawnBall(true);
 }
 
-// ---------- render ----------
+// -------- Render --------
 function draw(){
   ctx.save();
   if(shakeT>0){ shakeT-=dt; ctx.translate((Math.random()*2-1)*shakeMag, (Math.random()*2-1)*shakeMag); }
@@ -452,6 +593,17 @@ function draw(){
     ctx.fillStyle="#e66"; ctx.fillRect(boss.x,boss.y,boss.w,boss.h);
     ctx.fillStyle="#0008"; ctx.fillRect(20, 16, W-40, 8);
     ctx.fillStyle="#0f0";  ctx.fillRect(20, 16, (W-40)*(boss.hp/boss.max), 8);
+  }
+
+  // vortices (hard mode)
+  for(const v of vortices){
+    if(v.ttl<=0) continue;
+    const life = Math.max(0, v.ttl/5500);
+    ctx.save();
+    ctx.globalAlpha = 0.25 + 0.35*life;
+    ctx.beginPath(); ctx.arc(v.x,v.y,v.r,0,Math.PI*2); ctx.fillStyle="#462a70"; ctx.fill();
+    ctx.lineWidth=2; ctx.strokeStyle="#9b7bd1"; ctx.stroke();
+    ctx.restore();
   }
 
   // paddle (with shield glow)
@@ -501,9 +653,10 @@ function draw(){
   }
 
   // particles
-  for(const p of [...bursts]){
+  for(let i=bursts.length-1;i>=0;i--){
+    const p = bursts[i];
     p.x+=p.vx; p.y+=p.vy; p.life-=0.03;
-    if(p.life<=0){ bursts.splice(bursts.indexOf(p),1); continue; }
+    if(p.life<=0){ bursts.splice(i,1); continue; }
     ctx.globalAlpha=Math.max(0,p.life);
     ctx.fillStyle="#fff"; ctx.fillRect(p.x,p.y,2,2);
     ctx.globalAlpha=1;
@@ -512,8 +665,9 @@ function draw(){
   ctx.restore();
 }
 
-// ---------- boot & resize ----------
+// -------- Boot & Resize --------
 startBtn.addEventListener("click",()=>{
+  readSelectedMode();
   ui.style.display="none";
   if(!running){ lives=3; level=1; score=0; reset(); running=true; paused=false; last=performance.now(); requestAnimationFrame(update); }
   else { paused=false; requestAnimationFrame(update); }
